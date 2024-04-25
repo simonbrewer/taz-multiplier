@@ -1,0 +1,478 @@
+---
+title: "TAZ-level Multiplier with regional variables"
+knit: (function(input_file, encoding) {
+  out_dir <- 'docs';
+  rmarkdown::render(input_file,
+ encoding=encoding,
+ output_file=file.path(dirname(input_file), out_dir, 'taz_regional_multiplier.html'))})
+author: |
+  | Simon Brewer
+  | Geography Department
+  | University of Utah
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    fig_caption: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+library(tidyverse)
+library(ggdag)
+library(lme4)
+library(lmerTest)
+library(sjPlot)
+library(piecewiseSEM)
+library(skimr)
+
+load("./data/all_data.RData")
+```
+
+## Background
+
+The overall goal is to estimate a multiplier representing the effects of transit on vehicle miles traveled (VMT). The multiplier is comprised of direct (`ADE`) and indirect (`AIE`) effects:
+
+\[
+TM = (ADE + AIE) / ADE
+\]
+
+## Regional variable
+
+```{r echo=FALSE}
+# reg_var = 'fuel_msa10_400'
+reg_var = 'tpm'
+dat$reg_var = dat[, reg_var]
+dat$reg_var = (dat$reg_var - mean(dat$reg_var)) / sd(dat$reg_var)
+dat$transittrips <- ifelse(dat$transittrips > 2, 2, dat$transittrips)
+# dat$transittrips <- log(dat$transittrips+1)
+# dat <- dat[-5093, ]
+skim(dat$tpm)
+```
+
+## Model paths
+
+Ignoring confounders (to keep things simple) we can develop the following set of paths or structural equation model (we use `transit_acc` to represent accessibility and `act_den` to represent activity density). This is the directed acyclic graph (*DAG*) for the main components
+
+A rough illustration of these given below:
+
+```{r echo=FALSE, fig.height=8}
+multi_dag <- dagify(anytransit ~ transit_acc,
+                    transittrips ~ transit_acc + anytransit,
+                    act_den ~ transit_acc,
+                    vmt ~ transit_acc + act_den + transittrips,
+                    coords = list(x = c(transit_acc = 1, 
+                                        anytransit = 2,
+                                        transittrips = 2,
+                                        act_den = 2,
+                                        vmt = 3),
+                                  y = c(transit_acc = 2, 
+                                        anytransit = 4,
+                                        transittrips = 3,
+                                        act_den = 1,
+                                        vmt = 2)
+                    )
+)
+
+multi_dag = multi_dag %>%
+  tidy_dagitty() %>%
+  mutate(type = c('blue', 'red', 'blue', 'red', 
+                  'red', 'blue', 'red', 'red'))
+
+multi_dag2 <- multi_dag
+
+int_df <- data.frame(name = c(NA, NA, NA, NA),
+                     x = c(2, 1, 2, 2),
+                     y = c(1, 2, 3, 3),
+                     direction = c(multi_dag$data$direction[1]),
+                     to = c(NA, NA, NA, NA),
+                     xend = c(2.5, 2.5, 2.5, 2),
+                     yend = c(2.7, 2.7, 1.2, 2),
+                     circular = FALSE,
+                     type = c('black', 'black', 'black', 'black'))
+
+text_df <- data.frame(x = c(1.6, 2.1, 2.5,
+                            1.6, 1.5, 2.5,
+                            2, 
+                            2.45, 2.25, 2.45, 1.95,
+                            2.55, 2.62), 
+                      y = c(3.5, 3.5, 2.7,
+                            2.75, 1.3, 1.3,
+                            2.10, 
+                            2.4, 2.7, 1.6, 2.65, 
+                            2.85, 1.22),
+                      label = c("m1,1", "m2,1", "m4,1",
+                                "m2,2", "m3,1", "m4,2",
+                                "m4,3",
+                                "i1", "i2", "i3", "i4",
+                                "r1", "r2")
+)
+
+reg_df <- data.frame(x = c(2.5, 2.5, 2.7, 3), 
+                     y = c(4, 3, 1, 2.5),
+                     label = c("RegVar1", "RegVar2", "RegVar3", "RegVar4")
+)
+
+reg_int_df <- data.frame(name = NA,
+                     x = c(2.5, 
+                           2.5, 2.5,
+                           2.7, 2.7,
+                           3),
+                     y = c(4, 
+                           3, 3.05,
+                           1, 1,
+                           2.5),
+                     direction = c(multi_dag$data$direction[1]),
+                     to = NA,
+                     xend = c(2.05, 
+                              2.05, 2.5,
+                              2, 2.45,
+                              3),
+                     yend = c(4, 
+                              3, 2.6,
+                              1, 1.35,
+                              2),
+                     circular = FALSE,
+                     type = 'darkgreen')
+
+multi_dag2 <- rbind(multi_dag2$data, int_df, reg_int_df)
+
+multi_dag2 %>%
+  # tidy_dagitty() %>%
+  ggplot() +
+  geom_dag_node(aes(x = x, y = y), color = 'white') +
+  geom_dag_edges(aes(x = x, y = y, xend = xend, yend = yend, edge_colour = type)) +
+  geom_dag_text(aes(x = x, y = y), color = 'black') +
+  geom_text(data = text_df, aes(x = x, y = y, label = label)) +
+  geom_label(data = reg_df, aes(x = x, y = y, label = label)) +
+  theme_dag()
+```
+
+This shows that the basic multiplier is based on a set of <span style="color:red">direct</span> and <span style="color:blue">indirect</span> paths: 
+
+- Direct effects
+    - `transit accessibility` $\rightarrow \beta_{m1,1} \rightarrow$ `anytransit` $\rightarrow \beta_{m2,1} \rightarrow$ `transittrips` $\rightarrow \beta_{m4,1} \rightarrow$ `vmt`
+    - `transit accessibility` $\rightarrow \beta_{m2,2} \rightarrow$ `transittrips` $\rightarrow \beta_{m4,1} \rightarrow$ `vmt`
+- Indirect effects
+    - `transit accessibility` $\rightarrow \beta_{m3,1} \rightarrow$ `activity density` $\rightarrow \beta_{4,2} \rightarrow$ `vmt`
+    - `transit accessibility` $\rightarrow \beta_{m4,3} \rightarrow$ `vmt`
+
+Where $\beta_{k,m}$ is the path coefficient from a regression model. From this we can estimate the two effects for the entire region:
+
+- Direct:
+
+$$
+\begin{aligned}
+ADE & = (\beta_{m1,1} \times \beta_{m2,1} \times \beta_{m4,1}) + (\beta_{m2,2} \times \beta_{m4,1})
+\end{aligned}
+$$
+
+- Indirect: 
+
+$$
+\begin{aligned}
+AIE = (\beta_{m3,1} \times \beta_{m4,2}) + \beta_{m4,3}
+\end{aligned}
+$$
+
+To allow variations in the multiplier at the TAZ level, we need to include some interactions (or *moderators*) that will adjust coefficients and ultimately the multiplier for a given TAZ. 
+
+- `i1`: the effect of `transittrips` on `vmt` is moderated by activity density
+- `i2`: the effect of `transittrips` on `vmt` is moderated by transit accessibility
+- `i3`: the effect of activity density on `vmt` is moderated by `transittrips`
+- `i4`: the effect of transit accessibility on `vmt` is moderated by `transittrips`
+- `r1`: the effect of `transittrips` on `vmt` is moderated by regional population
+- `r2`: the effect of activity density on `vmt` is moderated by regional population
+
+And using these, we can update the equations to get TAZ-level direct and indirect effects that include regional variation:
+
+- Direct: 
+
+$$
+\begin{split}
+ADE = & (\beta_{m1,1} \times \beta_{m2,1} \times (\beta_{m4,1} + i_1 \cdot \mbox{actden} + i_2 \cdot \mbox{pctemp30t} + r_1 \cdot \mbox{reg_var})) \: + \\
+& (\beta_{m2,2} \times (\beta_{m4,1} + i_1 \cdot \mbox{actden} + i_2 \cdot \mbox{pctemp30t} + r_1 \cdot \mbox{reg_var}))
+\end{split}
+$$
+
+- Indirect: 
+
+$$
+\begin{split}
+AIE = & (\beta_{m3,1} \times (\beta_{m4,2} + i_3 \cdot \mbox{transittrips}) + r_2 \cdot \mbox{reg_var}) \: + \\
+& (\beta_{m4,3} + i_4 \cdot \mbox{transittrips})
+\end{split}
+$$
+
+## Coefficients
+
+```{r echo=FALSE}
+## ------------------------
+## Model 1
+f1 <- anytransit ~ pctemp30t + hhsize + employed + 
+  incn + entropy + pct4way + reg_var +
+  (1 | region)
+# f1 <- anytransit ~ pctemp30t + hhsize + employed + 
+#   pct4way + 
+#   (1 | region)
+lm1 <- lmer(f1, 
+            data = dat,
+            REML = TRUE,
+            control = lmerControl(optimizer="Nelder_Mead"))
+
+## ------------------------
+## Model 2
+f2 <- transittrips ~ pctemp30t + hhsize + employed + 
+  incn + entropy + anytransit + reg_var +
+  (1 | region)
+# f2 <- transittrips ~ pctemp30t + hhsize + employed + 
+#   incn + entropy + anytransit + 
+#   (1 | region)
+lm2 <- lmer(f2, 
+            data = dat,
+            REML = TRUE,
+            control = lmerControl(optimizer="Nelder_Mead"))
+
+## ------------------------
+## Model 3
+f3 <- actden ~ pctemp30t + entropy + pct4way +
+  pctemp30a + reg_var + 
+  (1 | region)
+# f3 <- actden ~ pctemp30t + entropy + pct4way +
+#   pctemp30a + 
+#   (1 | region)
+lm3 <- lmer(f3, 
+            data = dat,
+            REML = TRUE,
+            control = lmerControl(optimizer="Nelder_Mead"))
+
+## ------------------------
+## Model 4
+f4 <- vmt100occ ~ hhsize + employed + incn +
+  entropy + pct4way +
+  transittrips * actden + transittrips * pctemp30t + 
+  reg_var * actden + reg_var * transittrips +
+  (1 | region)
+lm4 <- lmer(f4,
+            data = dat,
+            REML = TRUE,
+            control = lmerControl(optimizer="Nelder_Mead"))
+```
+
+### Path coefficients
+
+```{r}
+m11 = as.numeric(fixef(lm1)['pctemp30t'])
+m21 = as.numeric(fixef(lm2)['anytransit'])
+m22 = as.numeric(fixef(lm2)['pctemp30t'])
+m41 = as.numeric(fixef(lm4)['transittrips'])
+```
+
+```{r}
+m31 = as.numeric(fixef(lm3)['pctemp30t'])
+m42 = as.numeric(fixef(lm4)['actden'])
+m43 = as.numeric(fixef(lm4)['pctemp30t'])
+```
+
+```{r}
+coef_df = data.frame(m11, m21, m22, m31, m41, m42, m43)
+knitr::kable(coef_df)
+```
+
+### Interactions
+
+```{r}
+i1 <- as.numeric(fixef(lm4)['transittrips:actden'])
+i2 <- as.numeric(fixef(lm4)['transittrips:pctemp30t'])
+i3 <- as.numeric(fixef(lm4)['transittrips:actden'])
+i4 <- as.numeric(fixef(lm4)['transittrips:pctemp30t'])
+r1 <- as.numeric(fixef(lm4)['transittrips:reg_var'])
+r2 <- as.numeric(fixef(lm4)['actden:reg_var'])
+```
+
+```{r}
+int_df = data.frame(i1, i2, i3, i4, r1, r2)
+knitr::kable(int_df)
+```
+
+### Final direct effect equation
+
+$$
+\begin{split}
+ADE & = ({`r round(m11, 4)`} \times {`r round(m21, 4)`} \times ({`r round(m41, 4)`} + {`r round(i1, 4)`} \cdot \mbox{actden} + {`r round(i2, 4)`} \cdot \mbox{pctemp30t} + {`r round(r1, 4)`} \cdot \mbox{reg_var})) \\
+& + ({`r round(m22, 4)`} \times ({`r round(m41, 4)`} + {`r round(i1, 4)`} \cdot \mbox{actden} + {`r round(i2, 4)`} \cdot \mbox{pctemp30t} + {`r round(r1, 4)`} \cdot \mbox{reg_var}))
+\end{split}
+$$
+
+### Final indirect effect equation
+
+$$
+\begin{aligned}
+AIE & = ({`r round(m31, 4)`} \times ({`r round(m42, 4)`} + {`r round(i3, 4)`} \cdot \mbox{transittrips} + {`r round(r2, 4)`} \cdot \mbox{reg_var})) \\
+& + ({`r round(m43, 4)`} + {`r round(i4, 4)`} \cdot \mbox{transittrips})
+\end{aligned}
+$$
+
+### TAZ Multipliers
+
+- Direct effect
+
+```{r}
+ade = as.numeric((m11 * m21 * (m41 + i1 * dat$actden + i2 * dat$pctemp30t + r1 * dat$reg_var)) + 
+                   (m22 * (m41 + i1 * dat$actden + i2 * dat$pctemp30t + r1 * dat$reg_var)))
+print(median(ade))
+```
+
+- Indirect effect
+
+```{r}
+aie = as.numeric((m31 * (m42 + i3 * dat$transittrips + r2 * dat$reg_var)) + (m43 + i4 * dat$transittrips))
+print(median(aie))
+```
+
+- Multiplier
+
+```{r}
+TM = (ade + aie) / ade
+print(range(TM))
+```
+
+```{r}
+#TM2 <- TM[TM < quantile(TM, 0.99)]
+# TM2 <- TM[which(TM > 1)]
+hist(TM, breaks = 100)
+```
+
+## Placetype Multiplier
+
+```{r}
+dat$TM = TM
+dat_pt = dat %>%
+  filter(PlaceType != "0")
+```
+
+```{r}
+ggplot(dat_pt, aes(x = PlaceType, y = TM)) +
+         geom_boxplot() +
+  scale_y_log10() +
+  scale_x_discrete(guide = guide_axis(n.dodge = 2)) +
+  theme_bw()
+```
+
+```{r}
+ggplot(dat_pt, aes(x = reorder(region, TM, median), y = TM)) +
+         geom_boxplot() +
+  scale_y_log10() +
+  scale_x_discrete("Region", guide = guide_axis(n.dodge = 2)) +
+  theme_bw()
+```
+
+
+```{r message=FALSE, warning=FALSE}
+dat_reg = dat_pt %>%
+  group_by(PlaceType, region) %>%
+  summarize(actden = mean(actden),
+            pctemp30t = mean(pctemp30t),
+            transittrips = mean(transittrips),
+            reg_var = mean(reg_var))
+
+ade = as.numeric((m11 * m21 * 
+                    (m41 + i1 * dat_reg$actden + 
+                       i2 * dat_reg$pctemp30t + r1 * dat_reg$reg_var)) + 
+                   (m22 * (m41 + i1 * dat_reg$actden + 
+                             i2 * dat_reg$pctemp30t + 
+                             r1 * dat_reg$reg_var)))
+
+aie = as.numeric((m31 * (m42 + i3 * dat_reg$transittrips + 
+                           r2 * dat_reg$reg_var)) + 
+                   (m43 + i4 * dat_reg$transittrips))
+
+dat_reg$TM = (ade + aie) / ade
+```
+
+```{r message=FALSE, warning=FALSE}
+library(reshape2)
+dat_reg_tab = dcast(dat_reg, region ~ PlaceType, value.var = "TM")
+dat_reg_tab = dat_reg_tab %>% 
+  ungroup() %>% 
+  # mutate(Total = rowSums(across(where(is.numeric)))) %>%
+  bind_rows(summarize(., region = "Mean", 
+                      across(where(is.numeric), \(x) mean(x, na.rm = TRUE))))
+
+knitr::kable(dat_reg_tab)
+```
+
+```{r}
+dat_out <- dat %>%
+  select(TAZ, region, region_id, regTAZ, 
+         pctemp30t, actden, transittrips, 
+         hhsize, incn, employed, entropy, 
+         pct4way, PlaceType, reg_var, 
+         taz_pop, taz_emp,
+         TM)
+write.csv(dat_out, "./output/multiplier_output.csv", row.names = FALSE)
+```
+
+```{r}
+dat_out <- dat %>%
+  select(TAZ, region, region_id, regTAZ, 
+         PlaceType, 
+         TM)
+write.csv(dat_out, "./output/taz_multiplier_output.csv", row.names = FALSE)
+```
+
+### Regional Multiplier
+
+- Direct effect
+
+```{r}
+ade = as.numeric((m11 * m21 * m41) + (m22 * m41))
+print(median(ade))
+```
+
+- Indirect effect
+
+```{r}
+aie = as.numeric((m31 * m42) + m43)
+print(median(aie))
+```
+
+- Multiplier
+
+```{r}
+TM = (ade + aie) / ade
+print(TM)
+```
+
+## Appendix 1: Models
+
+
+### Model 1 `anytransit`
+
+```{r echo=FALSE}
+tab_model(lm1, digits = 4)
+```
+
+### Model 2: `transittrips`
+
+```{r echo=FALSE}
+tab_model(lm2, digits = 4)
+```
+
+### Model 3: `actden`
+
+```{r echo=FALSE}
+tab_model(lm3, digits = 4)
+```
+
+### Model 4: `vmt100occ`
+
+```{r echo=FALSE}
+tab_model(lm4, digits = 4)
+```
+
+
