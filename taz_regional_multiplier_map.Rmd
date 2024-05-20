@@ -1,0 +1,86 @@
+---
+title: "CARB TAZ-level Multiplier"
+knit: (function(input_file, encoding) {
+  out_dir <- 'docs';
+  rmarkdown::render(input_file,
+ encoding=encoding,
+ output_file=file.path(dirname(input_file), out_dir, 'taz_regional_multiplier_map.html'))})
+author: |
+  - Simon Brewer^[Geography Department, University of Utah, simon.brewer@geog.utah.edu]
+  - Hassan Ameli^[City and Metrpolitan Planning, University of Utah, s.hassanameli@outlook.com]
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    fig_caption: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+library(tidyverse)
+library(sf)
+library(leaflet)
+
+load("./data/all_data.RData")
+```
+
+```{r echo=FALSE}
+taz_tm <- read.csv("./data/multiplier_output_all_taz.csv")
+```
+
+```{r echo=FALSE}
+taz_sf <- st_read("./data/CA_6region_TAZ/CA_TAZ_simp.shp", 
+                  quiet = TRUE)
+# plot(st_geometry(taz_sf))
+# taz_sf <- st_transform(taz_sf, 4326)
+# taz_sf <- st_make_valid(taz_sf)
+# taz_sf <- st_simplify(taz_sf, dTolerance = 1e3)
+```
+
+```{r echo=FALSE}
+taz_sf$region = taz_sf$region - 50
+taz_sf$region = sprintf("%02d", taz_sf$region)
+taz_sf$regTAZ = paste0(taz_sf$region, "_", taz_sf$TAZ)
+
+tmp_df <- data.frame(regTAZ = taz_tm$regTAZ,
+                     TM = taz_tm$TM_use)
+
+taz_sf = merge(taz_sf, tmp_df, by = "regTAZ")
+```
+
+
+```{r echo=FALSE}
+taz_popup = paste0(
+  "<b>TAZ: </b>",
+  taz_sf$TAZ,
+  "<br>",
+  "<b>Region: </b>",
+  taz_sf$region,
+  "<br>",
+  "<b>multiplier: </b>",
+  round(taz_sf$TM, 3)
+)
+```
+
+```{r echo=FALSE}
+leaflet() %>%
+  # add a dark basemap
+  addProviderTiles("OpenStreetMap.Mapnik") %>%
+  # add the polygons of the clusters
+  addPolygons(
+    data = taz_sf,
+    color = "#000000",
+    # set the opacity of the outline
+    opacity = 1,
+    # set the stroke width in pixels
+    weight = 1,
+    # set the fill opacity
+    fillColor = "#E2E2E2",
+    fillOpacity = 0.7, 
+    label = taz_sf$regTAZ,
+    popup = taz_popup
+  ) 
+```
+
