@@ -12,6 +12,7 @@ author: |
 date: "`r format(Sys.time(), '%d %B, %Y')`"
 output:
   html_document:
+    theme: flatly
     toc: yes
     toc_float: yes
     fig_caption: yes
