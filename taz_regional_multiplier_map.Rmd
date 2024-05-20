@@ -7,10 +7,11 @@ knit: (function(input_file, encoding) {
  output_file=file.path(dirname(input_file), out_dir, 'taz_regional_multiplier_map.html'))})
 author: |
   - Simon Brewer^[Geography Department, University of Utah, simon.brewer@geog.utah.edu]
-  - Hassan Ameli^[City and Metrpolitan Planning, University of Utah, s.hassanameli@outlook.com]
+  - Hassan Ameli^[City and Metropolitan Planning, University of Utah, s.hassanameli@outlook.com]
 date: "`r format(Sys.time(), '%d %B, %Y')`"
 output:
   html_document:
+    theme: flatly
     fig_caption: yes
 ---
 
